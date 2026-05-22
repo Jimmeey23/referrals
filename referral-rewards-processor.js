@@ -10,6 +10,99 @@ import path from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const ADDITIONAL_HOST_CONFIGS = {
+    "33905": {
+        hostId: "33905",
+        rewardMembershipId: 583036,
+        eligibilityMembershipId: 583037,
+        customerStartDate: "2026-05-22T12:00:00+05:30",
+        referralReportStartDate: "2026-05-22T12:00:00+05:30",
+        hostName: "Physique 57 Mumbai"
+    }
+};
+
+function parseHostIds(env = process.env) {
+    const legacyHostId = env.MOMENCE_HOST_ID || "13752";
+    const configuredHostIds = (env.MOMENCE_HOST_IDS || "")
+        .split(',')
+        .map(hostId => hostId.trim())
+        .filter(Boolean);
+
+    return [...new Set([legacyHostId, ...configuredHostIds, ...Object.keys(ADDITIONAL_HOST_CONFIGS)])];
+}
+
+function getHostConfigs(env = process.env) {
+    const legacyHostId = env.MOMENCE_HOST_ID || "13752";
+    const legacyRewardMembershipId = parseInt(env.REFERRAL_MEMBERSHIP_ID || "583035");
+    const legacyEligibilityMembershipId = parseInt(env.ELIGIBILITY_MEMBERSHIP_ID || "263860");
+
+    return parseHostIds(env).map(hostId => {
+        if (ADDITIONAL_HOST_CONFIGS[hostId]) {
+            return ADDITIONAL_HOST_CONFIGS[hostId];
+        }
+
+        return {
+            hostId,
+            rewardMembershipId: legacyRewardMembershipId,
+            eligibilityMembershipId: legacyEligibilityMembershipId,
+            customerStartDate: "2025-12-01T12:00:00+05:30",
+            referralReportStartDate: "2025-12-22T18:30:00.000Z",
+            hostName: "Physique 57 Mumbai"
+        };
+    });
+}
+
+function getHostConfig(hostId, hostConfigs = CONFIG.HOSTS) {
+    return hostConfigs.find(hostConfig => hostConfig.hostId === String(hostId));
+}
+
+function buildCustomerFilters(hostConfig) {
+    return {
+        "type": "and",
+        "visits": {
+            "count": {
+                "type": "exactly",
+                "value": 1
+            },
+            "qualifiers": {
+                "sessionIds": [],
+                "templateIds": [],
+                "sessionSeriesIds": [],
+                "appointmentServiceIds": [],
+                "membershipIds": [{"membershipId": hostConfig.eligibilityMembershipId}],
+                "teacherIds": [],
+                "locationIds": []
+            },
+            "dateType": "fixed",
+            "startDate": hostConfig.customerStartDate,
+            "endDate": "2027-12-31T12:00:00+05:30"
+        }
+    };
+}
+
+function buildReferralReportPayload(hostConfig) {
+    return {
+        "timeZone": "Asia/Kolkata",
+        "groupRecurring": false,
+        "computedSaleValue": true,
+        "includeVatInRevenue": true,
+        "useBookedEntityDateRange": false,
+        "excludeMembershipRenews": false,
+        "day": "2025-12-26T00:00:00.000Z",
+        "moneyCreditSalesFilter": "filterOutSalesPaidByMoneyCredits",
+        "hideVoided": false,
+        "excludeInactiveMembers": false,
+        "includeRefunds": false,
+        "showOnlySpotfillerRevenue": false,
+        "startDate": hostConfig.referralReportStartDate,
+        "endDate": "2027-12-31T18:29:00.000Z",
+        "startDate2": "2025-12-22T18:30:00.000Z",
+        "endDate2": "2025-12-31T18:29:59.999Z",
+        "datePreset": -1,
+        "datePreset2": 4
+    };
+}
+
 // --- CONFIGURATION ---
 const CONFIG = {
     // Retry system configuration
@@ -32,6 +125,7 @@ const CONFIG = {
     // API endpoints
     MOMENCE_BASE_URL: "https://momence.com/_api/primary",
     HOST_ID: process.env.MOMENCE_HOST_ID || "13752",
+    HOSTS: getHostConfigs(process.env),
 
     // Location mapping
     LOCATIONS: {
@@ -40,7 +134,7 @@ const CONFIG = {
         "Kenkere House": 22116,
     },
 
-    // Membership configuration
+    // Membership configuration for the legacy/default host
     REFERRAL_MEMBERSHIP_ID: parseInt(process.env.REFERRAL_MEMBERSHIP_ID || "583035"),
 
     // Supabase configuration
@@ -77,14 +171,14 @@ const logger = {
     }
 };
 
-function getMomenceHeaders() {
+function getMomenceHeaders(hostId = CONFIG.HOST_ID) {
     return {
         'Cookie': process.env.MOMENCE_ALL_COOKIES,
         'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
         'x-app': 'dashboard-3e70af2f38ef34aeb9824cb7b75a7397e5c9966e',
-        'x-origin': `https://momence.com/dashboard/${CONFIG.HOST_ID}/reports/customer-referral-rewards`,
+        'x-origin': `https://momence.com/dashboard/${hostId}/reports/customer-referral-rewards`,
         'baggage': 'sentry-environment=production,sentry-release=dashboard-3e70af2f38ef34aeb9824cb7b75a7397e5c9966e',
         'sentry-trace': '6f8ad8c1ee2447e8a6200d60d422116c-8c2eabb852a4a659-0',
         'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
@@ -139,32 +233,12 @@ async function sendRequestWithRetry(requestOptions, requestType = 'GENERAL') {
 /**
  * Fetches customers with exactly 1 visit for specific membership
  */
-async function fetchCustomersWithOneVisit() {
-    console.log('📋 Fetching customers with exactly 1 visit...');
+async function fetchCustomersWithOneVisit(hostConfig) {
+    console.log(`📋 Fetching customers with exactly 1 visit for host ${hostConfig.hostId}...`);
 
-    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${CONFIG.HOST_ID}/customers`;
+    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${hostConfig.hostId}/customers`;
     const params = {
-        filters: JSON.stringify({
-            "type": "and",
-            "visits": {
-                "count": {
-                    "type": "exactly",
-                    "value": 1
-                },
-                "qualifiers": {
-                    "sessionIds": [],
-                    "templateIds": [],
-                    "sessionSeriesIds": [],
-                    "appointmentServiceIds": [],
-                    "membershipIds": [{"membershipId": 263860}],
-                    "teacherIds": [],
-                    "locationIds": []
-                },
-                "dateType": "fixed",
-                "startDate": "2025-12-01T12:00:00+05:30",
-                "endDate": "2027-12-31T12:00:00+05:30"
-            }
-        }),
+        filters: JSON.stringify(buildCustomerFilters(hostConfig)),
         query: "",
         page: 0,
         pageSize: 20
@@ -180,7 +254,7 @@ async function fetchCustomersWithOneVisit() {
                 method: 'GET',
                 url: url,
                 params: { ...params, page },
-                headers: getMomenceHeaders()
+                headers: getMomenceHeaders(hostConfig.hostId)
             }, 'CUSTOMER');
 
             if (response.payload && response.payload.length > 0) {
@@ -203,31 +277,12 @@ async function fetchCustomersWithOneVisit() {
 /**
  * Initiates referral rewards report
  */
-async function initiateReferralReport() {
-    console.log('📊 Initiating referral rewards report...');
+async function initiateReferralReport(hostConfig) {
+    console.log(`📊 Initiating referral rewards report for host ${hostConfig.hostId}...`);
 
-    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${CONFIG.HOST_ID}/reports/customer-referral-rewards/async`;
+    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${hostConfig.hostId}/reports/customer-referral-rewards/async`;
 
-    const payload = {
-        "timeZone": "Asia/Kolkata",
-        "groupRecurring": false,
-        "computedSaleValue": true,
-        "includeVatInRevenue": true,
-        "useBookedEntityDateRange": false,
-        "excludeMembershipRenews": false,
-        "day": "2025-12-26T00:00:00.000Z",
-        "moneyCreditSalesFilter": "filterOutSalesPaidByMoneyCredits",
-        "hideVoided": false,
-        "excludeInactiveMembers": false,
-        "includeRefunds": false,
-        "showOnlySpotfillerRevenue": false,
-        "startDate": "2025-12-22T18:30:00.000Z",
-        "endDate": "2027-12-31T18:29:00.000Z",
-        "startDate2": "2025-12-22T18:30:00.000Z",
-        "endDate2": "2025-12-31T18:29:59.999Z",
-        "datePreset": -1,
-        "datePreset2": 4
-    };
+    const payload = buildReferralReportPayload(hostConfig);
 
     try {
         const response = await sendRequestWithRetry({
@@ -235,7 +290,7 @@ async function initiateReferralReport() {
             url: url,
             data: payload,
             headers: {
-                ...getMomenceHeaders(),
+                ...getMomenceHeaders(hostConfig.hostId),
                 'x-idempotence-key': generateIdempotenceKey()
             }
         }, 'REPORT');
@@ -255,17 +310,17 @@ async function initiateReferralReport() {
 /**
  * Polls for referral report completion
  */
-async function pollReferralReport(reportRunId) {
+async function pollReferralReport(reportRunId, hostConfig) {
     console.log(`⏳ Polling referral report ${reportRunId}...`);
 
-    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${CONFIG.HOST_ID}/reports/customer-referral-rewards/report-runs/${reportRunId}`;
+    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${hostConfig.hostId}/reports/customer-referral-rewards/report-runs/${reportRunId}`;
 
     for (let attempt = 0; attempt < CONFIG.POLL_MAX_ATTEMPTS; attempt++) {
         try {
             const response = await sendRequestWithRetry({
                 method: 'GET',
                 url: url,
-                headers: getMomenceHeaders()
+                headers: getMomenceHeaders(hostConfig.hostId)
             }, 'REPORT');
 
             console.log(`   📊 Report status: ${response.status}`);
@@ -324,13 +379,13 @@ async function checkIfAlreadyProcessed(givingMemberId, receivingMemberId) {
 /**
  * Makes payment request to reward giving member
  */
-async function rewardGivingMember(givingMemberId, homeLocationId) {
-    console.log(`💰 Rewarding giving member ${givingMemberId}...`);
+async function rewardGivingMember(givingMemberId, homeLocationId, hostConfig) {
+    console.log(`💰 Rewarding giving member ${givingMemberId} for host ${hostConfig.hostId}...`);
 
-    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${CONFIG.HOST_ID}/pos/payments/pay-cart`;
+    const url = `${CONFIG.MOMENCE_BASE_URL}/host/${hostConfig.hostId}/pos/payments/pay-cart`;
 
     const payload = {
-        "hostId": parseInt(CONFIG.HOST_ID),
+        "hostId": parseInt(hostConfig.hostId),
         "payingMemberId": givingMemberId,
         "targetMemberId": givingMemberId,
         "items": [
@@ -340,7 +395,7 @@ async function rewardGivingMember(givingMemberId, homeLocationId) {
                 "quantity": 1,
                 "priceInCurrency": 0,
                 "isPaymentPlanUsed": false,
-                "membershipId": CONFIG.REFERRAL_MEMBERSHIP_ID,
+                "membershipId": hostConfig.rewardMembershipId,
                 "appliedPriceRuleIds": []
             }
         ],
@@ -361,7 +416,7 @@ async function rewardGivingMember(givingMemberId, homeLocationId) {
             url: url,
             data: payload,
             headers: {
-                ...getMomenceHeaders(),
+                ...getMomenceHeaders(hostConfig.hostId),
                 'x-idempotence-key': generateIdempotenceKey()
             }
         }, 'PAYMENT');
@@ -377,7 +432,7 @@ async function rewardGivingMember(givingMemberId, homeLocationId) {
 /**
  * Updates Supabase table with referral information
  */
-async function updateSupabaseRecord(referralData) {
+async function updateSupabaseRecord(referralData, hostConfig) {
     console.log(`📝 Updating Supabase record for receiving member ${referralData.receivingMemberId}...`);
 
     const record = {
@@ -390,7 +445,7 @@ async function updateSupabaseRecord(referralData) {
         givingMemberRewarded: referralData.givingMemberRewarded,
         receivingMemberTotalSpend: referralData.receivingMemberTotalSpend || 0,
         spendingThreshold: 0,
-        hostName: "Physique 57 Mumbai",
+        hostName: hostConfig.hostName,
         hostCurrency: "inr",
         givingMemberFirstName: referralData.givingMemberFirstName,
         givingMemberLastName: referralData.givingMemberLastName,
@@ -494,131 +549,32 @@ async function processReferralRewards() {
         }
 
         logger.info('🔧 Environment check passed');
+        logger.info(`🏢 Hosts configured: ${CONFIG.HOSTS.map(host => `${host.hostId} (reward ${host.rewardMembershipId}, eligibility ${host.eligibilityMembershipId})`).join(', ')}`);
 
-        // Step 1: Fetch customers and initiate referral report in parallel
-        console.log('\n📊 STEP 1: Fetching data...');
-        const [customers, reportRunId] = await Promise.all([
-            fetchCustomersWithOneVisit(),
-            initiateReferralReport()
-        ]);
+        const totals = {
+            customers: 0,
+            referralRecords: 0,
+            processed: 0,
+            rewarded: 0,
+            skipped: 0
+        };
 
-        if (customers.length === 0) {
-            console.log('⚠️ No customers found with exactly 1 visit');
-            return;
+        for (const hostConfig of CONFIG.HOSTS) {
+            const summary = await processReferralRewardsForHost(hostConfig);
+            totals.customers += summary.customers;
+            totals.referralRecords += summary.referralRecords;
+            totals.processed += summary.processed;
+            totals.rewarded += summary.rewarded;
+            totals.skipped += summary.skipped;
         }
 
-        // Step 2: Poll for referral report completion
-        console.log('\n📊 STEP 2: Waiting for referral report...');
-        const referralData = await pollReferralReport(reportRunId);
-
-        if (referralData.length === 0) {
-            console.log('⚠️ No referral data found');
-            return;
-        }
-
-        // Step 3: Process matches and rewards
-        console.log('\n🎯 STEP 3: Processing matches and rewards...');
-        let processedCount = 0;
-        let rewardedCount = 0;
-        let skippedCount = 0;
-
-        // Create customer lookup map
-        const customerMap = new Map();
-        customers.forEach(customer => {
-            customerMap.set(customer.memberId, customer);
-        });
-
-        console.log(`📋 Found ${customers.length} customers and ${referralData.length} referral records`);
-
-        // Process each referral record
-        for (const referral of referralData) {
-            processedCount++;
-
-            console.log(`\n--- Processing referral ${processedCount}/${referralData.length} ---`);
-            console.log(`📧 Receiving Member: ${referral.receivingMemberEmail} (ID: ${referral.receivingMemberId})`);
-            console.log(`👥 Giving Member: ${referral.givingMemberFirstName} ${referral.givingMemberLastName} (ID: ${referral.givingMemberId})`);
-            console.log(`🏠 Home Location: ${referral.homeLocation}`);
-            console.log(`📊 Visits: ${referral.receivingMemberVisits}, Spend: ${referral.receivingMemberTotalSpend}`);
-
-            // Check if receiving member is in our customer list
-            const receivingMember = customerMap.get(referral.receivingMemberId);
-            if (!receivingMember) {
-                console.log(`⏭️ Receiving member ${referral.receivingMemberId} not in customer list, skipping`);
-                continue;
-            }
-
-            // Determine if member qualifies (>= 1 visits)
-            const isQualified = (referral.receivingMemberVisits || 0) >= 1;
-            if (!isQualified) {
-                console.log(`📝 Receiving member ${referral.receivingMemberId} has < 1 visits - will track but not reward`);
-            }
-
-            // Check if this giving/receiving member pair has already been processed
-            const processStatus = await checkIfAlreadyProcessed(
-                referral.givingMemberId,
-                referral.receivingMemberId
-            );
-
-            if (processStatus.processed) {
-                if (processStatus.rewarded) {
-                    console.log(`🚫 LIFETIME DUPLICATE: Giving member ${referral.givingMemberId} was already rewarded for receiving member ${referral.receivingMemberId} - skipping forever`);
-                } else {
-                    console.log(`⏭️ Giving/receiving member pair ${referral.givingMemberId}/${referral.receivingMemberId} already processed (status: ${processStatus.status}), skipping`);
-                }
-                skippedCount++;
-                continue;
-            }
-
-            // Only reward if member is qualified
-            let rewardSuccess = false;
-            if (isQualified) {
-                // Determine home location
-                const homeLocationId = getLocationIdFromName(referral.homeLocation);
-                console.log(`🏠 Using home location ID: ${homeLocationId} for ${referral.homeLocation}`);
-
-                // Reward giving member
-                rewardSuccess = await rewardGivingMember(referral.givingMemberId, homeLocationId);
-            } else {
-                console.log(`⏭️ Not rewarding - receiving member not qualified`);
-            }
-
-            // Prepare referral data for Supabase
-            const referralRecord = {
-                receivingMemberEmail: receivingMember.email,
-                receivingMemberId: referral.receivingMemberId,
-                receivingMemberFirstName: receivingMember.firstName,
-                receivingMemberLastName: receivingMember.lastName,
-                givingMemberRewarded: rewardSuccess,
-                receivingMemberTotalSpend: referral.receivingMemberTotalSpend || 0,
-                givingMemberFirstName: referral.givingMemberFirstName,
-                givingMemberLastName: referral.givingMemberLastName,
-                givingMemberId: referral.givingMemberId,
-                homeLocation: referral.homeLocation,
-                receivingMemberVisits: referral.receivingMemberVisits || 1
-            };
-
-            // Update Supabase
-            const supabaseSuccess = await updateSupabaseRecord(referralRecord);
-
-            if (rewardSuccess) {
-                rewardedCount++;
-                console.log(`✅ Successfully processed referral for giving member ${referral.givingMemberId}`);
-            } else {
-                console.log(`❌ Failed to reward giving member ${referral.givingMemberId}`);
-            }
-
-            // Add small delay between rewards to be nice to the API
-            await delay(1000);
-        }
-
-        // Final summary
         logger.info('\n📊 PROCESSING SUMMARY');
         logger.info('='.repeat(60));
-        logger.info(`📋 Total customers fetched: ${customers.length}`);
-        logger.info(`📊 Total referral records: ${referralData.length}`);
-        logger.info(`🎯 Records processed: ${processedCount}`);
-        logger.info(`💰 Members rewarded: ${rewardedCount}`);
-        logger.info(`⏭️ Records skipped (already rewarded): ${skippedCount}`);
+        logger.info(`📋 Total customers fetched: ${totals.customers}`);
+        logger.info(`📊 Total referral records: ${totals.referralRecords}`);
+        logger.info(`🎯 Records processed: ${totals.processed}`);
+        logger.info(`💰 Members rewarded: ${totals.rewarded}`);
+        logger.info(`⏭️ Records skipped (already rewarded): ${totals.skipped}`);
         logger.info('✅ Referral rewards processing completed successfully!');
 
     } catch (error) {
@@ -632,6 +588,134 @@ async function processReferralRewards() {
             throw error;
         }
     }
+}
+
+async function processReferralRewardsForHost(hostConfig) {
+    logger.info(`\n🏢 Processing host ${hostConfig.hostId}`);
+
+    // Step 1: Fetch customers and initiate referral report in parallel
+    console.log('\n📊 STEP 1: Fetching data...');
+    const [customers, reportRunId] = await Promise.all([
+        fetchCustomersWithOneVisit(hostConfig),
+        initiateReferralReport(hostConfig)
+    ]);
+
+    if (customers.length === 0) {
+        console.log(`⚠️ No customers found with exactly 1 visit for host ${hostConfig.hostId}`);
+        return { customers: 0, referralRecords: 0, processed: 0, rewarded: 0, skipped: 0 };
+    }
+
+    // Step 2: Poll for referral report completion
+    console.log('\n📊 STEP 2: Waiting for referral report...');
+    const referralData = await pollReferralReport(reportRunId, hostConfig);
+
+    if (referralData.length === 0) {
+        console.log(`⚠️ No referral data found for host ${hostConfig.hostId}`);
+        return { customers: customers.length, referralRecords: 0, processed: 0, rewarded: 0, skipped: 0 };
+    }
+
+    // Step 3: Process matches and rewards
+    console.log('\n🎯 STEP 3: Processing matches and rewards...');
+    let processedCount = 0;
+    let rewardedCount = 0;
+    let skippedCount = 0;
+
+    // Create customer lookup map
+    const customerMap = new Map();
+    customers.forEach(customer => {
+        customerMap.set(customer.memberId, customer);
+    });
+
+    console.log(`📋 Found ${customers.length} customers and ${referralData.length} referral records for host ${hostConfig.hostId}`);
+
+    // Process each referral record
+    for (const referral of referralData) {
+        processedCount++;
+
+        console.log(`\n--- Processing referral ${processedCount}/${referralData.length} for host ${hostConfig.hostId} ---`);
+        console.log(`📧 Receiving Member: ${referral.receivingMemberEmail} (ID: ${referral.receivingMemberId})`);
+        console.log(`👥 Giving Member: ${referral.givingMemberFirstName} ${referral.givingMemberLastName} (ID: ${referral.givingMemberId})`);
+        console.log(`🏠 Home Location: ${referral.homeLocation}`);
+        console.log(`📊 Visits: ${referral.receivingMemberVisits}, Spend: ${referral.receivingMemberTotalSpend}`);
+
+        // Check if receiving member is in our customer list
+        const receivingMember = customerMap.get(referral.receivingMemberId);
+        if (!receivingMember) {
+            console.log(`⏭️ Receiving member ${referral.receivingMemberId} not in customer list, skipping`);
+            continue;
+        }
+
+        // Determine if member qualifies (>= 1 visits)
+        const isQualified = (referral.receivingMemberVisits || 0) >= 1;
+        if (!isQualified) {
+            console.log(`📝 Receiving member ${referral.receivingMemberId} has < 1 visits - will track but not reward`);
+        }
+
+        // Check if this giving/receiving member pair has already been processed
+        const processStatus = await checkIfAlreadyProcessed(
+            referral.givingMemberId,
+            referral.receivingMemberId
+        );
+
+        if (processStatus.processed) {
+            if (processStatus.rewarded) {
+                console.log(`🚫 LIFETIME DUPLICATE: Giving member ${referral.givingMemberId} was already rewarded for receiving member ${referral.receivingMemberId} - skipping forever`);
+            } else {
+                console.log(`⏭️ Giving/receiving member pair ${referral.givingMemberId}/${referral.receivingMemberId} already processed (status: ${processStatus.status}), skipping`);
+            }
+            skippedCount++;
+            continue;
+        }
+
+        // Only reward if member is qualified
+        let rewardSuccess = false;
+        if (isQualified) {
+            // Determine home location
+            const homeLocationId = getLocationIdFromName(referral.homeLocation);
+            console.log(`🏠 Using home location ID: ${homeLocationId} for ${referral.homeLocation}`);
+
+            // Reward giving member
+            rewardSuccess = await rewardGivingMember(referral.givingMemberId, homeLocationId, hostConfig);
+        } else {
+            console.log(`⏭️ Not rewarding - receiving member not qualified`);
+        }
+
+        // Prepare referral data for Supabase
+        const referralRecord = {
+            receivingMemberEmail: receivingMember.email,
+            receivingMemberId: referral.receivingMemberId,
+            receivingMemberFirstName: receivingMember.firstName,
+            receivingMemberLastName: receivingMember.lastName,
+            givingMemberRewarded: rewardSuccess,
+            receivingMemberTotalSpend: referral.receivingMemberTotalSpend || 0,
+            givingMemberFirstName: referral.givingMemberFirstName,
+            givingMemberLastName: referral.givingMemberLastName,
+            givingMemberId: referral.givingMemberId,
+            homeLocation: referral.homeLocation,
+            receivingMemberVisits: referral.receivingMemberVisits || 1
+        };
+
+        // Update Supabase
+        await updateSupabaseRecord(referralRecord, hostConfig);
+
+        if (rewardSuccess) {
+            rewardedCount++;
+            console.log(`✅ Successfully processed referral for giving member ${referral.givingMemberId}`);
+        } else {
+            console.log(`❌ Failed to reward giving member ${referral.givingMemberId}`);
+        }
+
+        // Add small delay between rewards to be nice to the API
+        await delay(1000);
+    }
+
+    return {
+        customers: customers.length,
+        referralRecords: referralData.length,
+        processed: processedCount,
+        rewarded: rewardedCount,
+        skipped: skippedCount
+    };
 }
 
 // --- ERROR HANDLING ---
@@ -656,5 +740,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     processReferralRewards().catch(logger.error);
 }
 
-export { processReferralRewards };
-export default { processReferralRewards };
+export { processReferralRewards, getHostConfigs, getHostConfig, buildCustomerFilters, buildReferralReportPayload };
+export default { processReferralRewards, getHostConfigs, getHostConfig, buildCustomerFilters, buildReferralReportPayload };

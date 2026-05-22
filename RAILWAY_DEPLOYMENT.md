@@ -34,11 +34,14 @@ In your Railway project dashboard, go to **Variables** tab and add:
 MOMENCE_ALL_COOKIES=your_momence_cookies_here
 MOMENCE_HOST_ID=13752
 REFERRAL_MEMBERSHIP_ID=583035
+ELIGIBILITY_MEMBERSHIP_ID=263860
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_KEY=your_supabase_service_role_key_here
 SUPABASE_TABLE=referral_rewards
 NODE_ENV=production
 ```
+
+Host `33905` is included automatically with reward membership ID `583036` and eligibility membership ID `583037`.
 
 #### Optional Variables:
 ```bash
