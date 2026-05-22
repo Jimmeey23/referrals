@@ -15,8 +15,8 @@ const ADDITIONAL_HOST_CONFIGS = {
         hostId: "33905",
         rewardMembershipId: 583036,
         eligibilityMembershipId: 583037,
-        customerStartDate: "2026-05-22T12:00:00+05:30",
-        referralReportStartDate: "2026-05-22T12:00:00+05:30",
+        customerStartDate: "2026-05-22T01:00:00+05:30",
+        referralReportStartDate: "2026-05-22T01:00:00+05:30",
         hostName: "Physique 57 Mumbai"
     }
 };
@@ -101,6 +101,10 @@ function buildReferralReportPayload(hostConfig) {
         "datePreset": -1,
         "datePreset2": 4
     };
+}
+
+function getRunMode(argv = process.argv) {
+    return argv.includes('--preview') || argv.includes('--dry-run') ? 'preview' : 'process';
 }
 
 // --- CONFIGURATION ---
@@ -590,6 +594,131 @@ async function processReferralRewards() {
     }
 }
 
+async function previewReferralRewards() {
+    logger.info('🔎 Starting Referral Rewards Live Preview...');
+    logger.info('='.repeat(60));
+
+    try {
+        // Validate environment variables
+        const requiredEnvVars = ['MOMENCE_ALL_COOKIES', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
+        const missing = requiredEnvVars.filter(v => !process.env[v]);
+        if (missing.length > 0) {
+            throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+        }
+
+        logger.info('🔧 Environment check passed');
+        logger.info(`🏢 Hosts configured: ${CONFIG.HOSTS.map(host => `${host.hostId} (reward ${host.rewardMembershipId}, eligibility ${host.eligibilityMembershipId})`).join(', ')}`);
+        logger.info('🧪 Preview mode: Momence reports will be fetched, but no rewards or Supabase writes will be made.');
+
+        const totals = {
+            customers: 0,
+            referralRecords: 0,
+            matchedReferrals: 0,
+            alreadyProcessed: 0,
+            wouldReward: 0
+        };
+
+        for (const hostConfig of CONFIG.HOSTS) {
+            const summary = await previewReferralRewardsForHost(hostConfig);
+            totals.customers += summary.customers;
+            totals.referralRecords += summary.referralRecords;
+            totals.matchedReferrals += summary.matchedReferrals;
+            totals.alreadyProcessed += summary.alreadyProcessed;
+            totals.wouldReward += summary.wouldReward;
+        }
+
+        logger.info('\n📊 LIVE PREVIEW SUMMARY');
+        logger.info('='.repeat(60));
+        logger.info(`📋 Total eligible one-visit customers fetched: ${totals.customers}`);
+        logger.info(`📊 Total referral records fetched: ${totals.referralRecords}`);
+        logger.info(`🎯 Matched referrals: ${totals.matchedReferrals}`);
+        logger.info(`🚫 Already processed pairs: ${totals.alreadyProcessed}`);
+        logger.info(`💰 Would reward now: ${totals.wouldReward}`);
+        logger.info('✅ Preview completed without reward or database writes.');
+
+    } catch (error) {
+        logger.error('\n💥 PREVIEW ERROR:', error.message);
+        if (error.stack) {
+            logger.error('Stack trace:', error.stack);
+        }
+        if (CONFIG.IS_PRODUCTION) {
+            process.exit(1);
+        } else {
+            throw error;
+        }
+    }
+}
+
+async function previewReferralRewardsForHost(hostConfig) {
+    logger.info(`\n🏢 Previewing host ${hostConfig.hostId}`);
+
+    console.log('\n📊 STEP 1: Fetching live data...');
+    const [customers, reportRunId] = await Promise.all([
+        fetchCustomersWithOneVisit(hostConfig),
+        initiateReferralReport(hostConfig)
+    ]);
+
+    console.log('\n📊 STEP 2: Waiting for referral report...');
+    const referralData = await pollReferralReport(reportRunId, hostConfig);
+
+    const customerMap = new Map();
+    customers.forEach(customer => {
+        customerMap.set(customer.memberId, customer);
+    });
+
+    let matchedReferrals = 0;
+    let alreadyProcessed = 0;
+    let wouldReward = 0;
+
+    console.log(`\n🎯 STEP 3: Previewing matches for host ${hostConfig.hostId}...`);
+    console.log(`📋 Found ${customers.length} eligible customers and ${referralData.length} referral records`);
+
+    for (const referral of referralData) {
+        const receivingMember = customerMap.get(referral.receivingMemberId);
+        if (!receivingMember) {
+            continue;
+        }
+
+        matchedReferrals++;
+        const isQualified = (referral.receivingMemberVisits || 0) >= 1;
+        const processStatus = await checkIfAlreadyProcessed(
+            referral.givingMemberId,
+            referral.receivingMemberId
+        );
+
+        console.log(`\n--- Preview match ${matchedReferrals} for host ${hostConfig.hostId} ---`);
+        console.log(`📧 Receiving Member: ${referral.receivingMemberEmail || receivingMember.email} (ID: ${referral.receivingMemberId})`);
+        console.log(`👥 Giving Member: ${referral.givingMemberFirstName} ${referral.givingMemberLastName} (ID: ${referral.givingMemberId})`);
+        console.log(`🏠 Home Location: ${referral.homeLocation}`);
+        console.log(`📊 Visits: ${referral.receivingMemberVisits || receivingMember.visits || 1}, Spend: ${referral.receivingMemberTotalSpend || 0}`);
+
+        if (processStatus.processed) {
+            alreadyProcessed++;
+            console.log(`🚫 Would skip: pair already processed (rewarded: ${processStatus.rewarded}, status: ${processStatus.status})`);
+            continue;
+        }
+
+        if (isQualified) {
+            wouldReward++;
+            console.log(`💰 Would reward giving member with membership ${hostConfig.rewardMembershipId}`);
+        } else {
+            console.log('⏭️ Would not reward: receiving member is not qualified');
+        }
+    }
+
+    if (matchedReferrals === 0) {
+        console.log(`⚠️ No matched referrals found for host ${hostConfig.hostId}`);
+    }
+
+    return {
+        customers: customers.length,
+        referralRecords: referralData.length,
+        matchedReferrals,
+        alreadyProcessed,
+        wouldReward
+    };
+}
+
 async function processReferralRewardsForHost(hostConfig) {
     logger.info(`\n🏢 Processing host ${hostConfig.hostId}`);
 
@@ -737,8 +866,26 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     logger.info('🎯 Referral Rewards Processor v1.0');
     logger.info(`🕐 Started at: ${new Date().toLocaleString()}`);
     logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    processReferralRewards().catch(logger.error);
+    const runMode = getRunMode(process.argv);
+    const runPromise = runMode === 'preview' ? previewReferralRewards() : processReferralRewards();
+    runPromise.catch(logger.error);
 }
 
-export { processReferralRewards, getHostConfigs, getHostConfig, buildCustomerFilters, buildReferralReportPayload };
-export default { processReferralRewards, getHostConfigs, getHostConfig, buildCustomerFilters, buildReferralReportPayload };
+export {
+    processReferralRewards,
+    previewReferralRewards,
+    getHostConfigs,
+    getHostConfig,
+    buildCustomerFilters,
+    buildReferralReportPayload,
+    getRunMode
+};
+export default {
+    processReferralRewards,
+    previewReferralRewards,
+    getHostConfigs,
+    getHostConfig,
+    buildCustomerFilters,
+    buildReferralReportPayload,
+    getRunMode
+};

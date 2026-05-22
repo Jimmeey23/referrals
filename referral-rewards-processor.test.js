@@ -8,6 +8,7 @@ process.env.SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || 'test-ser
 const {
     buildCustomerFilters,
     buildReferralReportPayload,
+    getRunMode,
     getHostConfigs,
     getHostConfig
 } = await import('./referral-rewards-processor.js');
@@ -23,8 +24,8 @@ test('includes legacy and additional host reward configuration', () => {
     assert.equal(getHostConfig('13752', hostConfigs).eligibilityMembershipId, 263860);
     assert.equal(getHostConfig('33905', hostConfigs).rewardMembershipId, 583036);
     assert.equal(getHostConfig('33905', hostConfigs).eligibilityMembershipId, 583037);
-    assert.equal(getHostConfig('33905', hostConfigs).customerStartDate, '2026-05-22T12:00:00+05:30');
-    assert.equal(getHostConfig('33905', hostConfigs).referralReportStartDate, '2026-05-22T12:00:00+05:30');
+    assert.equal(getHostConfig('33905', hostConfigs).customerStartDate, '2026-05-22T01:00:00+05:30');
+    assert.equal(getHostConfig('33905', hostConfigs).referralReportStartDate, '2026-05-22T01:00:00+05:30');
 });
 
 test('keeps host configuration unique when MOMENCE_HOST_IDS also contains default hosts', () => {
@@ -47,6 +48,12 @@ test('uses host-specific start dates in customer filters and referral report pay
 
     assert.equal(buildCustomerFilters(legacyHost).visits.startDate, '2025-12-01T12:00:00+05:30');
     assert.equal(buildReferralReportPayload(legacyHost).startDate, '2025-12-22T18:30:00.000Z');
-    assert.equal(buildCustomerFilters(additionalHost).visits.startDate, '2026-05-22T12:00:00+05:30');
-    assert.equal(buildReferralReportPayload(additionalHost).startDate, '2026-05-22T12:00:00+05:30');
+    assert.equal(buildCustomerFilters(additionalHost).visits.startDate, '2026-05-22T01:00:00+05:30');
+    assert.equal(buildReferralReportPayload(additionalHost).startDate, '2026-05-22T01:00:00+05:30');
+});
+
+test('detects preview mode from CLI arguments', () => {
+    assert.equal(getRunMode(['node', 'referral-rewards-processor.js']), 'process');
+    assert.equal(getRunMode(['node', 'referral-rewards-processor.js', '--preview']), 'preview');
+    assert.equal(getRunMode(['node', 'referral-rewards-processor.js', '--dry-run']), 'preview');
 });

@@ -165,6 +165,9 @@ git push
 # Test single execution
 NODE_ENV=production node referral-rewards-processor.js
 
+# Preview live matches without rewarding members or writing to Supabase
+npm run preview
+
 # Check scheduler
 NODE_ENV=production node scheduler.js
 ```

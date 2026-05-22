@@ -8,6 +8,7 @@
     "start": "node referral-rewards-processor.js",
     "dev": "NODE_ENV=development node referral-rewards-processor.js",
     "prod": "NODE_ENV=production node referral-rewards-processor.js",
+    "preview": "node referral-rewards-processor.js --preview",
     "schedule": "node scheduler.js",
     "test": "NODE_ENV=test node referral-rewards-processor.js"
   },
